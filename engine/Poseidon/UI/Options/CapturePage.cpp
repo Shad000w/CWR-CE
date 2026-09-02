@@ -144,9 +144,8 @@ bool CapturePage::OnKeyDown(OptionsShell& shell, unsigned nChar)
         return false;
     if (nChar == SDLK_ESCAPE)
     {
-        if (m_state == Listening)
-            Resolve(shell, false);
-        return true; // eat in Captured state — avoids race with synthetic key tap from triGpadButton
+        Resolve(shell, false);
+        return true;
     }
 
     if (m_state != Listening)
