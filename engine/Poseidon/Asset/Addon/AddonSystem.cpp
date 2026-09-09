@@ -154,7 +154,7 @@ bool AddonSystem::CheckVersion(const RString& prefix, const ParamEntry& addon)
             RString required = *entry;
             if (VersionToInt(required) > version)
             {
-                WarningMessage("Addon '%s' requires version %s or higher", (const char*)patch.GetName(),
+                LOG_WARN(Config, "Addon '{}' requires version {} or higher", (const char*)patch.GetName(),
                                (const char*)required);
                 return false;
             }
@@ -330,7 +330,7 @@ void AddonSystem::ParseAllAddonConfigs()
                     const ParamFile* file = FindAddonConfig(requiredName);
                     if (!file)
                     {
-                        WarningMessage("Addon '%s' requires addon '%s'", (const char*)GetAddonName(config),
+                        LOG_WARN(Config,"Addon '{}' requires addon '{}'", (const char*)GetAddonName(config),
                                        (const char*)requiredName);
                         continue;
                     }
