@@ -18,6 +18,7 @@ class TextBankGL33;
 #define PROFILE_DX_SCOPE(name)
 
 #include <cstddef>
+#include <unordered_map>
 #include <vector>
 #include <Poseidon/Foundation/Containers/Array.hpp>
 #include <Poseidon/Foundation/Containers/StaticArray.hpp>
@@ -63,15 +64,17 @@ enum PixelShaderMode
 
 enum PixelShaderID
 {
-    PSNormal,
-    PSDetail,
-    PSGrass,
-    PSWater,
-    PSFlat,
-    PSShadow, // unlit cutout: constant black + alpha
-    NPixelShaders,
+    PSNormal = 0,
+    PSDetail = 1,
+    PSGrass = 2,
+    PSWater = 3,
+    PSFlat = 4,
+    PSShadow = 5, // unlit cutout: constant black + alpha
+    PSTerrain = 6,
+    NPixelShaders, // 7
     PSNone = NPixelShaders
 };
+static_assert(NPixelShaders == 7, "pixel shader set changed");
 
 struct alignas(16) PSConstants
 {
@@ -99,12 +102,15 @@ struct alignas(16) PSConstants
 
 enum VertexShaderID
 {
-    VSScreen,
-    VSTransform,
-    VSShadow, // unlit transform, shadow path
-    NVertexShaders,
+    VSScreen = 0,
+    VSTransform = 1,
+    VSShadow = 2, // unlit transform, shadow path
+    VSTerrain = 3,
+    VSWaterInst = 4,
+    NVertexShaders, // 5
     VSNone = NVertexShaders
 };
+static_assert(NVertexShaders == 5, "vertex shader set changed");
 
 namespace VSConst
 {
@@ -132,12 +138,9 @@ enum : int
     SlotTexMat0 = 24, // 4 vec4s
     SlotTexMat1 = 28, // 4 vec4s
     SlotTexCtrl = 32,
-    // Local (point/spot) lights for night per-vertex illumination.
-    SlotLightCount = 33,   // .x = active local light count
-    SlotLightPos = 34,     // MaxLocalLights vec4: xyz world pos, w = startAtten
-    SlotLightDiffuse = 42, // MaxLocalLights vec4: diffuse * nightEffect
-    SlotLightAmbient = 50, // MaxLocalLights vec4: ambient * nightEffect
-    SlotLightDir = 58,     // MaxLocalLights vec4: xyz beam dir (world), w = isSpot
+    SlotMatDiffuseRaw = 33, // raw material diffuse, for local-light modulation
+    SlotMatAmbientRaw = 34, // raw material ambient, for local-light modulation
+    // c35-c65 reserved
     SlotLightVP = 66,      // 4 vec4s: light view-projection for shadow-map sampling
     SlotLandGrid = 70,     // {invLandGrid, heightmap texels per land square, 0, 0}
 };
@@ -156,12 +159,9 @@ static_assert(SlotHmParams1 >= SlotHmParams0 + 1, "SlotHmParams1 overlaps SlotHm
 static_assert(SlotTexMat0 >= SlotHmParams1 + 1, "SlotTexMat0 overlaps SlotHmParams1");
 static_assert(SlotTexMat1 >= SlotTexMat0 + 4, "SlotTexMat1 overlaps SlotTexMat0");
 static_assert(SlotTexCtrl >= SlotTexMat1 + 4, "SlotTexCtrl overlaps SlotTexMat1");
-static_assert(SlotLightCount >= SlotTexCtrl + 1, "SlotLightCount overlaps SlotTexCtrl");
-static_assert(SlotLightPos >= SlotLightCount + 1, "SlotLightPos overlaps SlotLightCount");
-static_assert(SlotLightDiffuse >= SlotLightPos + MaxLocalLights, "SlotLightDiffuse overlaps SlotLightPos");
-static_assert(SlotLightAmbient >= SlotLightDiffuse + MaxLocalLights, "SlotLightAmbient overlaps SlotLightDiffuse");
-static_assert(SlotLightDir >= SlotLightAmbient + MaxLocalLights, "SlotLightDir overlaps SlotLightAmbient");
-static_assert(SlotLightVP >= SlotLightDir + MaxLocalLights, "SlotLightVP overlaps SlotLightDir");
+static_assert(SlotMatDiffuseRaw >= SlotTexCtrl + 1, "SlotMatDiffuseRaw overlaps SlotTexCtrl");
+static_assert(SlotMatAmbientRaw >= SlotMatDiffuseRaw + 1, "SlotMatAmbientRaw overlaps SlotMatDiffuseRaw");
+static_assert(SlotLightVP >= SlotMatAmbientRaw + 1, "SlotLightVP overlaps material raw slots");
 static_assert(SlotLandGrid >= SlotLightVP + 4, "SlotLandGrid overlaps SlotLightVP");
 }; // namespace VSConst
 
@@ -262,13 +262,13 @@ class EngineGL33 : public Engine
     bool _sunEnabled = false;
     Poseidon::TLMaterial _materialSet;
     int _materialSetSpec = 0;
-    // Signature of the LightList last uploaded by DoSetMaterial. SetMaterial's
+    // Signature of the LightList last uploaded by DoSetMaterialAndLights. SetMaterial's
     // cache must re-upload when the lights change, not only when the material
     // changes — otherwise a draw sharing a material with a prior lamp-less draw
     // reuses its empty light list and renders unlit (black road under a lamp).
     uint64_t _materialSetLightsSig = 0;
 #ifndef NDEBUG
-    // Debug tripwire: signature of the frame-constant lighting inputs DoSetMaterial
+    // Debug tripwire: signature of the frame-constant lighting inputs DoSetMaterialAndLights
     // folds in but leaves OUT of the per-draw cache key. Asserts on a cache hit
     // that they are unchanged — catches a cache that outlived its frame (a future
     // omitted-input bug like the black-road one, in the cross-frame direction).
@@ -295,7 +295,7 @@ class EngineGL33 : public Engine
                   const Poseidon::Rect2DAbs& clip) override;
     void DrawLine(int beg, int end) override;
 
-    void DoSetMaterial(const Poseidon::TLMaterial& mat, const LightList& lights,
+    void DoSetMaterialAndLights(const Poseidon::TLMaterial& mat, const LightList& lights,
                        const Poseidon::render::LegacySpec& spec);
     void SetMaterial(const Poseidon::TLMaterial& mat, const LightList& lights,
                      const Poseidon::render::LegacySpec& spec) override;
@@ -415,7 +415,15 @@ class EngineGL33 : public Engine
     bool _pointSampling;
     bool _enableReorder;
 
-    // GL sampler objects: 8 combos of point(4) | clampU(1) | clampV(2)
+    enum SamplerIndex : unsigned int
+    {
+        SamplerRepeat = 0, // linear, wrap both axes (the default)
+        SamplerClampU = 1,
+        SamplerClampV = 2,
+        SamplerClamp = SamplerClampU | SamplerClampV, // linear, clamp both axes
+        SamplerPoint = 4,
+    };
+    // GL sampler objects, indexed by bits defined in SamplerIndex
     unsigned int _samplerObjects[8] = {};
     void CreateSamplerStates();
     void DestroySamplerStates();
@@ -624,6 +632,14 @@ class EngineGL33 : public Engine
     void FinishDraw() override;
     void NextFrame() override;
     void SetTerrainHeightmap(const float* heights, int width, int height, float invGrid, float invLandGrid) override;
+    void PrepareTerrain(const TerrainSetup& setup) override;
+    void DrawTerrain(const GroundSegment* segments, size_t count, const TLMaterial& mat) override;
+    void DrawWater(const GroundSegment* segments, size_t count, const TLMaterial& mat, Texture* surfaceTex,
+                   float seaLevel) override;
+    void BeginGround(const LightList& lights) override;
+    unsigned AddTerrainLightSet(const LightList& lights) override;
+    void FreeTerrainInstanced();
+    void CreateTerrainBatches(struct TerrainInstancedGL33& t, int nTextures, const TerrainTexture* textures);
     bool LandClipInVS() const override;
     void SetLandClipParams(float mode, Vector3Par boundingCenter) override;
     void DrawTestPattern(const char* name) override;
@@ -721,6 +737,7 @@ class EngineGL33 : public Engine
     unsigned int _shadowMapTex = 0;                // GL depth texture ARRAY to sample
     int _shadowMapRes = 0;                         // its resolution
     unsigned int _heightMapTex = 0;                // GL R32F terrain height texture
+    struct TerrainInstancedGL33* _terrainInst = nullptr; // instanced terrain state
     int _shadowCascades = 0;                       // active cascade count this frame
     int _shadowOmniCount = 0;                      // leading omni (camera-sphere) tiers — distance-selected
     float _shadowMapVP[kShadowCascades * 16] = {}; // per-cascade light view-projections (column-major)
@@ -833,7 +850,7 @@ class EngineGL33 : public Engine
     // Run accumulation: Scene adds model-to-world transforms; the engine converts
     // (camera-relative GfxMatrix) and uploads on BeginInstancedRunUpload.
     void InstancedRunReset() override { _instPending = 0; }
-    bool InstancedRunAdd(const Matrix4& modelToWorld) override;
+    bool InstancedRunAdd(const Matrix4& modelToWorld, const LightList& lights) override;
     int InstancedRunPending() const { return _instPending; }
     void BeginInstancedRunUpload() override;
     bool InstancedRunActive() const override { return _instCount > 1; }
@@ -841,6 +858,10 @@ class EngineGL33 : public Engine
     bool _instImpure = false;
     int _instPending = 0;
     GfxMatrix _instArray[256];
+    // Per-instance packed light indices for the pending batch.
+    uint32_t _instLightIdx[256 * 4] = {};
+    // Light -> index into the LocalLights buffer, rebuilt each UploadLocalLights.
+    std::unordered_map<const Poseidon::Light*, int> _localLightIndices;
     void QueuePrepareTriangle(const Poseidon::MipInfo& absMip, int specFlags);
 
     void PrepareTriangle(const Poseidon::MipInfo& absMip, int specFlags) override;
@@ -967,7 +988,12 @@ class EngineGL33 : public Engine
     PassState BuildPassState(const FrameState& frame, Poseidon::PassId passId);
     void UploadVSWorldMatrix(const float worldMatrix[16]);
     void UploadVSMaterialConstants(const Poseidon::TLMaterial& mat, bool sunEnabled);
-    void UploadVSLights(const LightList& lights, const Poseidon::TLMaterial& mat, float nightEffect);
+    void UploadLocalLights(const LightList& aLights);
+    void BuildLocalLightMap(const LightList& aLights);
+    int ResolveLocalLightIndices(const LightList& lights, int* out) const;
+    void SetLocalLightIndices(const int* indices, int count);
+    void PackInstanceLights(int slot, const LightList& lights);
+    void UploadInstanceLightIndices(int count);
     void UploadVSTexGenConstants(TexGenMode mode);
     void SetShaderFogEnabled(bool enabled);
 

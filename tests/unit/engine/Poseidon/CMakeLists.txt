@@ -146,6 +146,7 @@ set(POSEIDON_TEST_SOURCES
     Graphics/test_model_renderer.cpp
     Graphics/test_gl33_rendering.cpp
     Graphics/test_gl33_bind_cache.cpp
+    Graphics/test_gl33_light_indices.cpp
     Graphics/test_gl33_land_clip.cpp
     Graphics/test_gl33_state_cache.cpp
     Graphics/test_fan_decompose.cpp
@@ -436,6 +437,7 @@ list(APPEND POSEIDON_TEST_SOURCES
     # Scene tests
     World/Scene/test_object.cpp
     World/Scene/test_scene.cpp
+    World/Scene/test_scene_draw_buckets.cpp
     World/Scene/test_scene_preloader.cpp
     World/Scene/test_surface_draw_order.cpp
     World/Scene/test_alpha_sort_order.cpp
@@ -468,6 +470,7 @@ list(APPEND POSEIDON_TEST_SOURCES
     UI/Controls/test_progress_bar_widget.cpp
     UI/Controls/test_control_object_rotate_devmode.cpp
     UI/Controls/test_html_table_row.cpp
+    UI/Controls/test_cursor_layout.cpp
     UI/test_button_modal_page.cpp
     UI/test_capture_page.cpp
     UI/test_confirm_page.cpp
